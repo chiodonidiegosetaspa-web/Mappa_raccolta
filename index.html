@@ -547,7 +547,6 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
     <div class="gps-row acquiring" id="gpsRow">
       <div class="gps-dot" id="gpsDot"></div>
       <div class="gps-txt"><strong id="gpsTitle">GPS in attesa...</strong><span id="gpsDetail">La posizione verrà registrata all'arrivo</span></div>
-      <button id="gpsRetryBtn" onclick="retryGPS()" style="display:none;margin-left:auto;flex-shrink:0;background:var(--orange);border:none;border-radius:6px;color:#000;font-size:11px;font-weight:700;padding:4px 8px;cursor:pointer">Attiva GPS</button>
     </div>
 
     <!-- Scarico (hidden if none) -->
@@ -654,11 +653,8 @@ function toggle3D() {
   _is3D = !_is3D;
   const btn = document.getElementById('icon3d');
   if (_is3D) {
-    // Zoom in per vedere gli edifici (servono almeno zoom 15+)
-    const curZoom = map.getZoom();
-    map.easeTo({ pitch: 60, bearing: map.getBearing(), zoom: Math.max(curZoom, 16), duration: 900 });
+    map.easeTo({ pitch: 60, bearing: map.getBearing(), duration: 700 });
     btn.style.color = 'var(--orange)';
-    showToast('🏙️ Vista 3D attiva — zoom in per vedere gli edifici');
   } else {
     map.easeTo({ pitch: 0, bearing: 0, duration: 700 });
     btn.style.color = 'var(--text2)';
@@ -775,7 +771,7 @@ function initMap(){
     _flushMapOps(); return;
   }
 
-  // Stili con edifici 3D — liberty di OFM ha source 'openmaptiles'
+  // Prova OpenFreeMap liberty, fallback a bright, poi a demotiles
   const STYLES = [
     'https://tiles.openfreemap.org/styles/liberty',
     'https://tiles.openfreemap.org/styles/bright',
@@ -795,51 +791,15 @@ function initMap(){
       fadeDuration: 0
     });
     map.addControl(new maplibregl.NavigationControl({showCompass:true, visualizePitch:true}), 'top-right');
-    map.on('load', () => {
-      // ── Aggiungi edifici 3D ──
-      try {
-        const style = map.getStyle();
-        // Trova la prima sorgente vettoriale con layer 'building'
-        let buildingSrc = null;
-        for (const [srcId, src] of Object.entries(style.sources || {})) {
-          if (src.type === 'vector') { buildingSrc = srcId; break; }
-        }
-        if (buildingSrc) {
-          // Rimuovi layer building piatto se esiste
-          ['building', 'building-top', 'building-outline'].forEach(l => {
-            if (map.getLayer(l)) map.removeLayer(l);
-          });
-          // Inserisci edifici estrusi 3D sopra lo sfondo
-          map.addLayer({
-            id: 'buildings-3d',
-            type: 'fill-extrusion',
-            source: buildingSrc,
-            'source-layer': 'building',
-            minzoom: 14,
-            paint: {
-              'fill-extrusion-color': ['interpolate',['linear'],['zoom'],
-                14, '#1e2133', 16, '#252940', 18, '#2e3354'],
-              'fill-extrusion-height': [
-                'coalesce',
-                ['get','render_height'],['get','height'],['get','levels'],8
-              ],
-              'fill-extrusion-base': ['coalesce',['get','render_min_height'],0],
-              'fill-extrusion-opacity': 0.82
-            }
-          });
-        }
-      } catch(e) { console.warn('3D buildings:', e); }
-      _flushMapOps();
-    });
+    map.on('load', () => { _flushMapOps(); });
     map.on('error', (e) => {
-      // Reagisce SOLO a errori di caricamento stile (non errori di tile)
-      if (!_mapLoaded && e.error && e.error.status && e.error.status >= 400 && styleIdx < STYLES.length - 1) {
+      if (!_mapLoaded && styleIdx < STYLES.length - 1) {
         styleIdx++;
-        try { map.remove(); } catch(ex){}
-        map = null;
+        map.remove(); map = null;
         tryStyle();
+      } else {
+        _flushMapOps(); // proceed even on error
       }
-      // Ignora tutti gli altri errori (tile 404, ecc.) — non crashare
     });
     // Safety: force flush after 8s if style never fires 'load'
     setTimeout(() => { if (!_mapLoaded) _flushMapOps(); }, 8000);
@@ -988,12 +948,6 @@ function setGps(state,title,detail){
   document.getElementById('gpsTitle').textContent=title;
   document.getElementById('gpsDetail').textContent=detail;
   document.getElementById('gpsDot').className='gps-dot'+(state==='acquiring'?' blink':'');
-  const btn=document.getElementById('gpsRetryBtn');
-  if(btn) btn.style.display=(state==='failed')?'block':'none';
-}
-function retryGPS(){
-  stopGPS(); startGPS();
-  showToast('🔄 Richiesta GPS — accetta il permesso nel browser');
 }
 async function captureGPS(){
   return new Promise(resolve=>{
@@ -1199,8 +1153,6 @@ function speakInstruction(step, distPrefix) {
   const sentence = buildInstruction(step, distPrefix);
   speak(sentence);
 }
-
-function fmtDist(m) {
   if (m >= 1000) return (m/1000).toFixed(1) + ' km';
   return Math.round(m) + ' m';
 }
@@ -1234,29 +1186,13 @@ async function fetchOSRMRoute(fromLat, fromLng, toLat, toLng) {
 
 async function toggleNavigation() {
   if (navActive) { stopNavigation(); return; }
-
+  if (!lastGpsPos) { showToast('⚠️ GPS non ancora disponibile'); return; }
   const stop = stops[currentIndex];
-
-  // Geocodifica destinazione se necessario
   if (!stop.coords) {
     showToast('⏳ Geocodifica in corso...');
     stop.coords = await geocode(stop.address, stop.comune);
     if (!stop.coords) { showToast('❌ Indirizzo non trovato sulla mappa'); return; }
   }
-
-  // Se GPS non disponibile, cerca coordinata di partenza dalla fermata precedente completata
-  if (!lastGpsPos) {
-    const prevDone = stops.slice(0, currentIndex).reverse().find(s => s.status==='done' && s.coords);
-    if (prevDone) {
-      showToast('⚠️ GPS assente — partenza dalla fermata precedente');
-      lastGpsPos = { coords: { latitude: prevDone.coords[0], longitude: prevDone.coords[1], accuracy: 9999, heading: null } };
-    } else {
-      showToast('⚠️ GPS richiesto per la navigazione — attiva la posizione');
-      document.getElementById('gpsRetryBtn').style.display='block';
-      return;
-    }
-  }
-
   await startNavigation(stop);
 }
 
@@ -1727,42 +1663,28 @@ function setVoiceText(txt) {
   document.getElementById('voiceText').textContent = txt;
 }
 
-let _voiceCooldown = false;
-
 function processCommand(text) {
-  if (_voiceCooldown) return; // ignora comandi durante cooldown post-TTS
   const t = text.toLowerCase().trim();
   for (const cmd of VOICE_COMMANDS) {
     if (cmd.patterns.some(p => t.includes(p))) {
+      // Flash feedback
       setVoiceText('✅ Riconosciuto: "' + t + '"');
       setTimeout(() => { if(voiceActive) setVoiceText('In ascolto... dì un comando'); }, 1500);
-      // Attiva cooldown per evitare che il TTS venga riconosciuto come comando
-      _voiceCooldown = true;
-      setTimeout(() => { _voiceCooldown = false; }, 3500);
       cmd.action();
       return;
     }
   }
+  // Not recognized — show what was heard
   setVoiceText('❓ Non capito: "' + t + '" — riprova');
   setTimeout(() => { if(voiceActive) setVoiceText('In ascolto... dì un comando'); }, 2000);
 }
 
-// ── Voice TTS feedback — pausa microfono durante parlato ──
+// ── Voice TTS feedback (optional, brief) ──
 function speak(text) {
   if (!window.speechSynthesis) return;
+  // Very short confirmations only
   const u = new SpeechSynthesisUtterance(text);
   u.lang = 'it-IT'; u.volume = 0.7; u.rate = 1.1;
-  // Pausa riconoscimento per evitare che il TTS venga risentito dal mic
-  if (voiceActive && voiceRecog) {
-    try { voiceRecog.stop(); } catch(e){}
-    u.onend = () => {
-      _voiceCooldown = true;
-      setTimeout(() => {
-        _voiceCooldown = false;
-        if (voiceActive) { try { voiceRecog.start(); } catch(e){} }
-      }, 600);
-    };
-  }
   window.speechSynthesis.cancel();
   window.speechSynthesis.speak(u);
 }

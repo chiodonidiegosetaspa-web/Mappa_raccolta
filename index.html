@@ -832,13 +832,14 @@ function initMap(){
       _flushMapOps();
     });
     map.on('error', (e) => {
-      if (!_mapLoaded && styleIdx < STYLES.length - 1) {
+      // Reagisce SOLO a errori di caricamento stile (non errori di tile)
+      if (!_mapLoaded && e.error && e.error.status && e.error.status >= 400 && styleIdx < STYLES.length - 1) {
         styleIdx++;
-        map.remove(); map = null;
+        try { map.remove(); } catch(ex){}
+        map = null;
         tryStyle();
-      } else {
-        _flushMapOps(); // proceed even on error
       }
+      // Ignora tutti gli altri errori (tile 404, ecc.) — non crashare
     });
     // Safety: force flush after 8s if style never fires 'load'
     setTimeout(() => { if (!_mapLoaded) _flushMapOps(); }, 8000);
@@ -1198,6 +1199,8 @@ function speakInstruction(step, distPrefix) {
   const sentence = buildInstruction(step, distPrefix);
   speak(sentence);
 }
+
+function fmtDist(m) {
   if (m >= 1000) return (m/1000).toFixed(1) + ' km';
   return Math.round(m) + ' m';
 }

@@ -7,8 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Navigator Raccolta</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@400;500;600&display=swap');
@@ -409,9 +409,12 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
 :root { --purple-dim: rgba(179,157,219,.10); }
 
 /* Leaflet dark override */
-.leaflet-container { background: #1a1d27; }
-.leaflet-control-zoom a { background: var(--surface2) !important; border-color: var(--border) !important; color: var(--text) !important; }
-.leaflet-control-zoom a:hover { background: var(--surface) !important; }
+.maplibregl-canvas { border-radius: 0; }
+.maplibregl-ctrl-group { background: var(--surface2) !important; border: 1px solid var(--border) !important; border-radius: 8px !important; overflow: hidden; }
+.maplibregl-ctrl-group button { background: var(--surface2) !important; border: none !important; color: var(--text) !important; }
+.maplibregl-ctrl-group button:hover { background: var(--surface) !important; }
+.maplibregl-popup-content { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; }
+.maplibregl-popup-tip { border-top-color: var(--surface2) !important; border-bottom-color: var(--surface2) !important; }
 </style>
 </head>
 <body>
@@ -626,7 +629,7 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs
 
 let stops=[], currentIndex=0, routeInfo={name:'',scarico:'',orari:''};
 let gpsWatchId=null, lastGpsPos=null, gpsEnabled=false;
-let map=null, destMarker=null, userMarker=null, routeLine=null, doneMarkers=[];
+let map=null, destMarker=null, userMarker=null, doneMarkers=[];
 let geocodeCache={};
 let mapExpanded=false;
 const PANEL_H_NORMAL=268, PANEL_H_COMPACT=110;
@@ -635,7 +638,7 @@ const PANEL_H_NORMAL=268, PANEL_H_COMPACT=110;
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
-  if(id==='navScreen') setTimeout(()=>{ if(map) map.invalidateSize(); }, 60);
+  if(id==='navScreen') setTimeout(()=>{ if(map) map.resize(); }, 60);
 }
 
 // ── MAP EXPAND TOGGLE ──
@@ -646,7 +649,7 @@ function toggleMapExpand(){
   document.getElementById('toggleIcon').innerHTML=mapExpanded
     ? '<path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>'
     : '<path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>';
-  setTimeout(()=>{ if(map) map.invalidateSize(); }, 350);
+  setTimeout(()=>{ if(map) map.resize(); }, 350);
 }
 
 // ── FILE INPUT ──
@@ -724,25 +727,64 @@ function parseTable(items,fname){
   currentIndex=0; showLoading(false); startNav();
 }
 
-// ── MAP ──
+// ── MAP (MapLibre GL JS + OpenFreeMap) ──
+let _pendingMapOps = [];
+
 function initMap(){
   if(map) return;
-  map=L.map('map',{zoomControl:false,attributionControl:true});
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
-  L.control.zoom({position:'topright'}).addTo(map);
-  map.setView([45.05,8.0],9);
+  map = new maplibregl.Map({
+    container: 'map',
+    style: 'https://tiles.openfreemap.org/styles/liberty',
+    center: [8.0, 45.05],
+    zoom: 9,
+    pitch: 0,
+    bearing: 0,
+    antialias: true
+  });
+  map.addControl(new maplibregl.NavigationControl({showCompass:true, visualizePitch:true}), 'top-right');
+  map.on('load', () => {
+    _pendingMapOps.forEach(fn=>fn());
+    _pendingMapOps=[];
+  });
 }
 
-const destIcon=L.divIcon({className:'',iconSize:[36,44],iconAnchor:[12,40],
-  html:`<div style="width:32px;height:32px;background:#ff6b00;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid white;box-shadow:0 3px 10px rgba(0,0,0,.5);position:relative"><div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(45deg);width:10px;height:10px;background:white;border-radius:50%"></div></div>`
-});
-const userIcon=L.divIcon({className:'',iconSize:[18,18],iconAnchor:[9,9],
-  html:`<div style="width:18px;height:18px;background:#4fc3f7;border-radius:50%;border:3px solid white;box-shadow:0 0 0 6px rgba(79,195,247,.22)"></div>`
-});
-const doneIcon=L.divIcon({className:'',iconSize:[26,26],iconAnchor:[13,13],
-  html:`<div style="width:26px;height:26px;background:#00e676;border-radius:50%;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,.3)">✓</div>`
-});
+function mapReady(fn) {
+  if(map && map.isStyleLoaded()) fn();
+  else _pendingMapOps.push(fn);
+}
 
+// ── Marker element helpers ──
+function _mkEl(html, w, h) {
+  const el=document.createElement('div');
+  el.style.cssText=`width:${w}px;height:${h}px;cursor:pointer`;
+  el.innerHTML=html; return el;
+}
+function mkDestEl(){return _mkEl(`<div style="width:32px;height:32px;background:#ff6b00;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid white;box-shadow:0 3px 10px rgba(0,0,0,.5);position:relative"><div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(45deg);width:10px;height:10px;background:white;border-radius:50%"></div></div>`,32,44);}
+function mkUserEl(){return _mkEl(`<div style="width:18px;height:18px;background:#4fc3f7;border-radius:50%;border:3px solid white;box-shadow:0 0 0 6px rgba(79,195,247,.22)"></div>`,18,18);}
+function mkDoneEl(){return _mkEl(`<div style="width:26px;height:26px;background:#00e676;border-radius:50%;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,.3)">✓</div>`,26,26);}
+
+// ── Line helpers (GeoJSON sources/layers) ──
+// coords: [[lat,lng],…] — converted to [lng,lat] for MapLibre
+function setMapLine(id, latlngCoords, color, width, dash){
+  const gj={ type:'Feature', geometry:{ type:'LineString',
+    coordinates: latlngCoords.map(c=>[c[1],c[0]]) } };
+  mapReady(()=>{
+    if(map.getSource(id)){ map.getSource(id).setData(gj); if(!map.getLayer(id)) _addLL(id,color,width,dash); }
+    else{ map.addSource(id,{type:'geojson',data:gj}); _addLL(id,color,width,dash); }
+  });
+}
+function _addLL(id,color,width,dash){
+  const paint={'line-color':color,'line-width':width,'line-opacity':0.9};
+  if(dash) paint['line-dasharray']=dash;
+  map.addLayer({id,type:'line',source:id,layout:{'line-cap':'round','line-join':'round'},paint});
+}
+function removeMapLine(id){
+  if(!map||!map.isStyleLoaded()) return;
+  if(map.getLayer(id)) map.removeLayer(id);
+  if(map.getSource(id)) map.removeSource(id);
+}
+
+// ── Geocode ──
 async function geocode(addr,comune){
   const q=`${addr}, ${comune}, Italy`;
   if(geocodeCache[q]) return geocodeCache[q];
@@ -755,25 +797,28 @@ async function geocode(addr,comune){
 }
 
 async function placeDestMarker(stop){
-  if(destMarker){map.removeLayer(destMarker);destMarker=null;}
-  if(routeLine){map.removeLayer(routeLine);routeLine=null;}
+  if(destMarker){ destMarker.remove(); destMarker=null; }
+  removeMapLine('route-dash');
   if(!stop.coords) stop.coords=await geocode(stop.address,stop.comune);
   if(!stop.coords) return;
-  destMarker=L.marker(stop.coords,{icon:destIcon}).addTo(map);
-  destMarker.bindPopup(`<strong>${stop.address}</strong><br><small>${stop.comune}</small>${stop.note?`<br><em style="color:#1976d2">${stop.note}</em>`:''}`);
+  destMarker=new maplibregl.Marker({element:mkDestEl(),anchor:'bottom'})
+    .setLngLat([stop.coords[1],stop.coords[0]])
+    .setPopup(new maplibregl.Popup({offset:15}).setHTML(`<strong>${stop.address}</strong><br><small>${stop.comune}</small>${stop.note?`<br><em style="color:#e65100">${stop.note}</em>`:''}`))
+    .addTo(map);
   if(lastGpsPos){
     const u=[lastGpsPos.coords.latitude,lastGpsPos.coords.longitude];
-    routeLine=L.polyline([u,stop.coords],{color:'#ff6b00',weight:3,dashArray:'8 6',opacity:.8}).addTo(map);
-    map.fitBounds(L.latLngBounds([u,stop.coords]),{padding:[50,50]});
+    setMapLine('route-dash',[u,stop.coords],'#ff6b00',3,[2,2]);
+    map.fitBounds([[Math.min(u[1],stop.coords[1])-0.003,Math.min(u[0],stop.coords[0])-0.003],
+                   [Math.max(u[1],stop.coords[1])+0.003,Math.max(u[0],stop.coords[0])+0.003]],{padding:60});
   } else {
-    map.setView(stop.coords,15);
+    map.flyTo({center:[stop.coords[1],stop.coords[0]],zoom:15});
   }
 }
 
 function placeDoneMarker(stop){
   if(!stop.coords) return;
-  const m=L.marker(stop.coords,{icon:doneIcon}).addTo(map);
-  m.bindPopup(`✓ <strong>${stop.address}</strong><br><small>${stop.comune}</small><br><small>${fmtDateTime(stop.arrivedAt)}</small>${stop.gps?`<br><small>📍 ${stop.gps.lat.toFixed(5)},${stop.gps.lng.toFixed(5)}</small>`:''}`);
+  const popup=new maplibregl.Popup({offset:15}).setHTML(`<strong>✓ ${stop.address}</strong><br><small>${stop.comune}</small><br><small>${fmtDateTime(stop.arrivedAt)}</small>${stop.gps?`<br><small>📍 ${stop.gps.lat.toFixed(5)},${stop.gps.lng.toFixed(5)}</small>`:''}`);
+  const m=new maplibregl.Marker({element:mkDoneEl(),anchor:'center'}).setLngLat([stop.coords[1],stop.coords[0]]).setPopup(popup).addTo(map);
   doneMarkers.push(m);
 }
 
@@ -792,15 +837,12 @@ function startGPS(){
     lastGpsPos=pos; gpsEnabled=true;
     setGps('acquired','GPS attivo ✓',`±${Math.round(pos.coords.accuracy)}m`);
     const ll=[pos.coords.latitude,pos.coords.longitude];
-    if(!userMarker) userMarker=L.marker(ll,{icon:userIcon,zIndexOffset:100}).addTo(map);
-    else userMarker.setLatLng(ll);
+    if(!userMarker){ userMarker=new maplibregl.Marker({element:mkUserEl(),anchor:'center'}).setLngLat([ll[1],ll[0]]).addTo(map); }
+    else userMarker.setLngLat([ll[1],ll[0]]);
     // Update static dashed line only if NOT navigating
     const cs=stops[currentIndex];
     if(!navActive) {
-      if(cs&&cs.coords){
-        if(routeLine) routeLine.setLatLngs([ll,cs.coords]);
-        else routeLine=L.polyline([ll,cs.coords],{color:'#ff6b00',weight:3,dashArray:'8 6',opacity:.8}).addTo(map);
-      }
+      if(cs&&cs.coords) setMapLine('route-dash',[ll,cs.coords],'#ff6b00',3,[2,2]);
     }
     // Feed navigation engine
     onNavGpsUpdate(pos);
@@ -933,8 +975,8 @@ async function markArrived(){
     showToast('✅ Arrivato (senza GPS)');
   }
   placeDoneMarker(stops[currentIndex]);
-  if(destMarker){map.removeLayer(destMarker);destMarker=null;}
-  if(routeLine){map.removeLayer(routeLine);routeLine=null;}
+  if(destMarker){ destMarker.remove(); destMarker=null; }
+  removeMapLine('route-dash');
   advanceToNext();
 }
 
@@ -960,8 +1002,8 @@ function confirmSkip(){
   closeSkipOverlay();
   stops[currentIndex].status='skipped';
   stops[currentIndex].gps=null; stops[currentIndex].arrivedAt=null;
-  if(destMarker){map.removeLayer(destMarker);destMarker=null;}
-  if(routeLine){map.removeLayer(routeLine);routeLine=null;}
+  if(destMarker){ destMarker.remove(); destMarker=null; }
+  removeMapLine('route-dash');
   advanceToNext();
   showToast('⊘ Fermata saltata');
 }
@@ -979,6 +1021,8 @@ let navDestCoords = null;
 let autoArrivalTriggered = false;
 let rerouteTimeout = null;
 let lastRoutePos = null;
+// Distance-based announcement thresholds (metres), tracked per step
+let announcedAt = { far: false, near: false, turn: false };
 
 // OSRM maneuver → emoji + Italian label
 function maneuverInfo(type, modifier) {
@@ -1012,7 +1056,45 @@ function maneuverInfo(type, modifier) {
   return map[key] || map[type+'-'] || ['↑', 'Prosegui'];
 }
 
-function fmtDist(m) {
+// ── Build a natural Italian instruction sentence ──
+function buildInstruction(step, distPrefix) {
+  const [, label] = maneuverInfo(step.type, step.modifier);
+  const road = (step.name && step.name !== '(unnamed road)' && step.name !== '') ? ' su ' + step.name : '';
+
+  // Override with natural phrasing per type
+  let action = label;
+  const t = step.type, m = step.modifier || '';
+  if (t === 'depart')        action = 'Parti' + road;
+  else if (t === 'arrive')   action = 'Sei arrivato a destinazione';
+  else if (t === 'turn') {
+    if (m === 'left')              action = 'Svolta a sinistra' + road;
+    else if (m === 'right')        action = 'Svolta a destra' + road;
+    else if (m === 'slight left')  action = 'Tieni la sinistra' + road;
+    else if (m === 'slight right') action = 'Tieni la destra' + road;
+    else if (m === 'sharp left')   action = 'Svolta nettamente a sinistra' + road;
+    else if (m === 'sharp right')  action = 'Svolta nettamente a destra' + road;
+    else if (m === 'uturn')        action = 'Fai inversione di marcia';
+    else action = label + road;
+  }
+  else if (t === 'continue')   action = 'Continua dritto' + road;
+  else if (t === 'new name')   action = 'Continua su' + road;
+  else if (t === 'merge')      action = 'Immettiti' + road;
+  else if (t === 'fork') {
+    action = (m.includes('left') ? 'Al bivio tieni la sinistra' : 'Al bivio tieni la destra') + road;
+  }
+  else if (t === 'off ramp')   action = 'Prendi l\'uscita' + road;
+  else if (t === 'roundabout' || t === 'rotary') action = 'Alla rotonda, prendi l\'uscita' + road;
+  else if (t === 'end of road') action = (m.includes('left') ? 'Fine strada, gira a sinistra' : 'Fine strada, gira a destra') + road;
+  else action = label + road;
+
+  if (!distPrefix) return action;
+  return 'Tra ' + distPrefix + ', ' + action.charAt(0).toLowerCase() + action.slice(1);
+}
+
+function speakInstruction(step, distPrefix) {
+  const sentence = buildInstruction(step, distPrefix);
+  speak(sentence);
+}
   if (m >= 1000) return (m/1000).toFixed(1) + ' km';
   return Math.round(m) + ' m';
 }
@@ -1026,6 +1108,14 @@ function haversine(lat1, lng1, lat2, lng2) {
   const R = 6371000, dLat = (lat2-lat1)*Math.PI/180, dLng = (lng2-lng1)*Math.PI/180;
   const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLng/2)**2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function bearingBetween(lat1, lng1, lat2, lng2) {
+  const toR = d => d * Math.PI / 180;
+  const dL = toR(lng2 - lng1);
+  const y = Math.sin(dL) * Math.cos(toR(lat2));
+  const x = Math.cos(toR(lat1)) * Math.sin(toR(lat2)) - Math.sin(toR(lat1)) * Math.cos(toR(lat2)) * Math.cos(dL);
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
 
 async function fetchOSRMRoute(fromLat, fromLng, toLat, toLng) {
@@ -1063,16 +1153,17 @@ async function startNavigation(stop) {
     navTotalDist = route.distance;
     navTotalTime = route.duration;
 
-    // Draw route polyline (blue, solid)
-    if (navPolyline) { map.removeLayer(navPolyline); navPolyline = null; }
-    if (routeLine)   { map.removeLayer(routeLine);   routeLine = null; }
-    const coords = route.geometry.coordinates.map(c => [c[1], c[0]]);
-    navPolyline = L.polyline(coords, {
-      color: '#4fc3f7', weight: 5, opacity: .9,
-      lineCap: 'round', lineJoin: 'round'
-    }).addTo(map);
-    // Thin grey "remaining" highlight — updated as we progress
+    // Draw route polyline via MapLibre GeoJSON layer
+    removeMapLine('nav-route');
+    removeMapLine('route-dash');
+    navPolyline = true; // flag: route is displayed
     navRemainingLine = null;
+
+    mapReady(() => {
+      const geojson = { type:'Feature', geometry: route.geometry };
+      if (map.getSource('nav-route')) { map.getSource('nav-route').setData(geojson); if(!map.getLayer('nav-route')) _addLL('nav-route','#4fc3f7',5,null); }
+      else { map.addSource('nav-route',{type:'geojson',data:geojson}); _addLL('nav-route','#4fc3f7',5,null); }
+    });
 
     // Extract steps from all legs
     navSteps = [];
@@ -1092,6 +1183,7 @@ async function startNavigation(stop) {
     }
     navStepIdx = 0;
     lastRoutePos = [from.latitude, from.longitude];
+    announcedAt = { far: false, near: false, turn: false };
 
     navActive = true;
     btn.disabled = false;
@@ -1101,10 +1193,24 @@ async function startNavigation(stop) {
     document.getElementById('navBanner').classList.add('show');
     updateNavStep();
 
-    // Fit map to route
-    map.fitBounds(navPolyline.getBounds(), {padding:[60,60]});
-    showToast('🗺️ Navigazione avviata');
-    speak('Navigazione avviata');
+    // Fit map to route then enter 3D navigation view
+    const rc = route.geometry.coordinates; // [lng,lat] pairs
+    const lngs = rc.map(c=>c[0]), lats = rc.map(c=>c[1]);
+    map.fitBounds([[Math.min(...lngs)-0.001,Math.min(...lats)-0.001],[Math.max(...lngs)+0.001,Math.max(...lats)+0.001]],{padding:60});
+    showToast('🗺️ Navigazione avviata — 3D ON');
+
+    // After fitting, tilt to 3D nav mode
+    setTimeout(() => {
+      const heading = bearingBetween(from.latitude, from.longitude, navSteps[0]?.lat || stop.coords[0], navSteps[0]?.lng || stop.coords[1]);
+      map.easeTo({ pitch: 60, bearing: heading, zoom: 17, duration: 1200 });
+    }, 1500);
+
+    // Announce first instruction
+    const first = navSteps[0];
+    if (first) {
+      const dist = fmtDist(first.distance);
+      setTimeout(() => speakInstruction(first, first.distance > 50 ? dist : null), 800);
+    }
 
   } catch(e) {
     btn.disabled = false;
@@ -1116,19 +1222,20 @@ async function startNavigation(stop) {
 function stopNavigation() {
   navActive = false;
   navSteps = []; navStepIdx = 0;
-  if (navPolyline)      { map.removeLayer(navPolyline);      navPolyline = null; }
-  if (navRemainingLine) { map.removeLayer(navRemainingLine); navRemainingLine = null; }
+  removeMapLine('nav-route');
+  navPolyline = null; navRemainingLine = null;
   document.getElementById('navBanner').classList.remove('show');
   const btn = document.getElementById('btnNav');
   btn.classList.remove('nav-active');
   btn.disabled = false;
   btn.innerHTML = '<svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:#0d1b2a;flex-shrink:0"><path d="M21.71 11.29l-9-9a1 1 0 0 0-1.42 0l-9 9a1 1 0 0 0 0 1.42l9 9a1 1 0 0 0 1.42 0l9-9a1 1 0 0 0 0-1.42zM14 14.5V12h-4v3H8v-4a1 1 0 0 1 1-1h5V7.5l3.5 3.5-3.5 3.5z"/></svg> Naviga';
-  // Restore dashed line if GPS + dest available
+  // Restore dashed line and reset 3D camera
   const stop = stops[currentIndex];
   if (lastGpsPos && stop && stop.coords) {
     const u = [lastGpsPos.coords.latitude, lastGpsPos.coords.longitude];
-    routeLine = L.polyline([u, stop.coords], {color:'#ff6b00',weight:3,dashArray:'8 6',opacity:.8}).addTo(map);
+    setMapLine('route-dash', [u, stop.coords], '#ff6b00', 3, [2, 2]);
   }
+  map.easeTo({ pitch: 0, bearing: 0, duration: 800 });
 }
 
 function updateNavStep() {
@@ -1166,29 +1273,83 @@ function onNavGpsUpdate(pos) {
     }
   }
 
-  // ── Advance to next step if close enough ──
-  if (navStepIdx < navSteps.length - 1) {
-    const next = navSteps[navStepIdx + 1];
-    const d = haversine(lat, lng, next.lat, next.lng);
-    if (d < 35) {
-      navStepIdx++;
-      updateNavStep();
-      // Announce next step vocally if meaningful distance
-      if (navSteps[navStepIdx].distance > 50) {
-        const [,label] = maneuverInfo(navSteps[navStepIdx].type, navSteps[navStepIdx].modifier);
-        speak('Tra ' + fmtDist(navSteps[navStepIdx].distance) + ', ' + label);
-      }
+  if (!navSteps.length) return;
+  const currentStep = navSteps[navStepIdx];
+
+  // ── Distance to current step's maneuver point ──
+  const distToTurn = haversine(lat, lng, currentStep.lat, currentStep.lng);
+
+  // ── Update banner distance in real time ──
+  document.getElementById('navStepDist').textContent = fmtDist(distToTurn);
+  const remDist = distToTurn + navSteps.slice(navStepIdx+1).reduce((s,x)=>s+x.distance,0);
+  const remTime = (distToTurn / Math.max(currentStep.distance,1)) * currentStep.duration
+                  + navSteps.slice(navStepIdx+1).reduce((s,x)=>s+x.duration,0);
+  document.getElementById('navDestDist').textContent = fmtDist(remDist);
+  document.getElementById('navDestTime').textContent = fmtDuration(remTime);
+
+  // ── 3-level voice announcements ──
+  const nextStep = navStepIdx + 1 < navSteps.length ? navSteps[navStepIdx + 1] : null;
+
+  // Decide thresholds based on step distance (short streets → closer alerts)
+  const FAR  = currentStep.distance > 500 ? 300 : currentStep.distance > 200 ? 200 : null;
+  const NEAR = currentStep.distance > 150 ? 100 : currentStep.distance > 60  ?  60 : null;
+  const AT   = 35;
+
+  if (FAR && !announcedAt.far && distToTurn <= FAR && distToTurn > NEAR) {
+    announcedAt.far = true;
+    speakInstruction(currentStep, fmtDist(Math.round(distToTurn / 50) * 50)); // round to 50m
+  }
+  else if (NEAR && !announcedAt.near && distToTurn <= NEAR && distToTurn > AT) {
+    announcedAt.near = true;
+    speakInstruction(currentStep, fmtDist(Math.round(distToTurn / 10) * 10)); // round to 10m
+  }
+  else if (!announcedAt.turn && distToTurn <= AT) {
+    announcedAt.turn = true;
+    // "Ora" announcement at the turn itself
+    const [, label] = maneuverInfo(currentStep.type, currentStep.modifier);
+    const road = (currentStep.name && currentStep.name !== '(unnamed road)') ? ' su ' + currentStep.name : '';
+    speak(buildInstruction(currentStep, null)); // no distance prefix = immediate action
+  }
+
+  // ── Advance to next step ──
+  if (nextStep && distToTurn < AT) {
+    navStepIdx++;
+    announcedAt = { far: false, near: false, turn: false }; // reset for new step
+    updateNavStep();
+    // Brief preview of the step after next (if meaningful)
+    const afterNext = navStepIdx + 1 < navSteps.length ? navSteps[navStepIdx + 1] : null;
+    if (afterNext && afterNext.distance > 80 && afterNext.type !== 'arrive') {
+      setTimeout(() => {
+        const [, al] = maneuverInfo(afterNext.type, afterNext.modifier);
+        speak('Poi, tra ' + fmtDist(afterNext.distance) + ', ' + al.charAt(0).toLowerCase() + al.slice(1));
+      }, 4000); // after 4s give a preview of what comes after
     }
   }
 
-  // ── Off-route detection: > 80m from any step location → reroute ──
-  const minDist = navSteps.slice(navStepIdx, navStepIdx+5).reduce((min, s) => {
+  // ── Off-route detection: > 80m from nearest upcoming step ──
+  const minDist = navSteps.slice(navStepIdx, navStepIdx + 5).reduce((min, s) => {
     return Math.min(min, haversine(lat, lng, s.lat, s.lng));
   }, Infinity);
   if (minDist > 80 && haversine(lat, lng, ...(lastRoutePos||[lat,lng])) > 50) {
     clearTimeout(rerouteTimeout);
-    rerouteTimeout = setTimeout(() => rerouteNow(), 3000); // reroute after 3s off-route
+    rerouteTimeout = setTimeout(() => {
+      speak('Ricalcolo del percorso in corso');
+      rerouteNow();
+    }, 3000);
+  } else {
+    clearTimeout(rerouteTimeout);
   }
+
+  // ── 3D camera: follow GPS position and bearing ──
+  let heading = (pos.coords.heading !== null && !isNaN(pos.coords.heading)) ? pos.coords.heading : null;
+  if (heading === null && lastRoutePos && haversine(lastRoutePos[0], lastRoutePos[1], lat, lng) > 5) {
+    heading = bearingBetween(lastRoutePos[0], lastRoutePos[1], lat, lng);
+  }
+  if (heading === null && navStepIdx < navSteps.length) {
+    heading = bearingBetween(lat, lng, navSteps[navStepIdx].lat, navSteps[navStepIdx].lng);
+  }
+  map.easeTo({ center:[lng,lat], bearing: heading||0, pitch:60, zoom:17, duration:900, easing: t=>t });
+
   lastRoutePos = [lat, lng];
 }
 
@@ -1222,8 +1383,8 @@ function renderList(){
     div.innerHTML=`<div class="s-dot ${dc}">${di}</div><div><div class="si-comune">${stop.comune||''}</div><div class="si-addr">${stop.address}</div>${stop.note?`<div class="si-note">ℹ️ ${stop.note}</div>`:''} ${stop.gps?`<div class="si-gps-line">📍 ${stop.gps.lat.toFixed(5)}, ${stop.gps.lng.toFixed(5)} ±${stop.gps.accuracy}m</div>`:''}${stop.arrivedAt?`<div class="si-time-line">🕐 ${fmtDateTime(stop.arrivedAt)}</div>`:''}<div class="si-badges">${badges}</div></div>`;
     if(stop.status==='pending') div.addEventListener('click',()=>{
       currentIndex=idx;
-      if(destMarker){map.removeLayer(destMarker);destMarker=null;}
-      if(routeLine){map.removeLayer(routeLine);routeLine=null;}
+      if(destMarker){ destMarker.remove(); destMarker=null; }
+      removeMapLine('route-dash');
       showScreen('navScreen'); updateUI(); showToast(`📍 Fermata ${stop.num}`);
     });
     c.appendChild(div);
@@ -1329,8 +1490,8 @@ function backToUpload(){
   if(done>0&&!confirm('Tornare all\'inizio? Il progresso sarà perso.'))return;
   stopGPS();
   if(navActive) stopNavigation();
-  if(navPolyline){map.removeLayer(navPolyline);navPolyline=null;}
-  if(map){doneMarkers.forEach(m=>map.removeLayer(m));doneMarkers=[];[destMarker,userMarker,routeLine].forEach(l=>{if(l)map.removeLayer(l);});destMarker=userMarker=routeLine=null;}
+  removeMapLine('nav-route'); removeMapLine('route-dash'); navPolyline=null;
+  if(map){ doneMarkers.forEach(m=>m.remove()); doneMarkers=[]; if(destMarker){destMarker.remove();destMarker=null;} if(userMarker){userMarker.remove();userMarker=null;} }
   stops=[];routeInfo={};currentIndex=0;lastGpsPos=null;gpsEnabled=false;geocodeCache={};
   document.getElementById('fileInput').value='';
   document.getElementById('doneOverlay').classList.remove('show');
@@ -1479,8 +1640,8 @@ function cmdSalta() {
   if (pending > 0) {
     speak('Salto la fermata');
     // Auto-confirm skip without dialog
-    if(destMarker){map.removeLayer(destMarker);destMarker=null;}
-    if(routeLine){map.removeLayer(routeLine);routeLine=null;}
+    if(destMarker){ destMarker.remove(); destMarker=null; }
+    removeMapLine('route-dash');
     stops[currentIndex].status='skipped';
     stops[currentIndex].gps=null; stops[currentIndex].arrivedAt=null;
     showToast('⊘ Fermata saltata (vocale)');

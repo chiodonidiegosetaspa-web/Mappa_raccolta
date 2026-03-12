@@ -547,6 +547,7 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
     <div class="gps-row acquiring" id="gpsRow">
       <div class="gps-dot" id="gpsDot"></div>
       <div class="gps-txt"><strong id="gpsTitle">GPS in attesa...</strong><span id="gpsDetail">La posizione verrà registrata all'arrivo</span></div>
+      <button id="gpsRetryBtn" onclick="retryGPS()" style="display:none;margin-left:auto;flex-shrink:0;background:var(--orange);border:none;border-radius:6px;color:#000;font-size:11px;font-weight:700;padding:4px 8px;cursor:pointer">Attiva GPS</button>
     </div>
 
     <!-- Scarico (hidden if none) -->
@@ -948,6 +949,12 @@ function setGps(state,title,detail){
   document.getElementById('gpsTitle').textContent=title;
   document.getElementById('gpsDetail').textContent=detail;
   document.getElementById('gpsDot').className='gps-dot'+(state==='acquiring'?' blink':'');
+  const btn=document.getElementById('gpsRetryBtn');
+  if(btn) btn.style.display=(state==='failed')?'block':'none';
+}
+function retryGPS(){
+  stopGPS(); startGPS();
+  showToast('🔄 Richiesta GPS — accetta il permesso nel browser');
 }
 async function captureGPS(){
   return new Promise(resolve=>{
@@ -1186,13 +1193,29 @@ async function fetchOSRMRoute(fromLat, fromLng, toLat, toLng) {
 
 async function toggleNavigation() {
   if (navActive) { stopNavigation(); return; }
-  if (!lastGpsPos) { showToast('⚠️ GPS non ancora disponibile'); return; }
+
   const stop = stops[currentIndex];
+
+  // Geocodifica destinazione se necessario
   if (!stop.coords) {
     showToast('⏳ Geocodifica in corso...');
     stop.coords = await geocode(stop.address, stop.comune);
     if (!stop.coords) { showToast('❌ Indirizzo non trovato sulla mappa'); return; }
   }
+
+  // Se GPS non disponibile, cerca coordinata di partenza dalla fermata precedente completata
+  if (!lastGpsPos) {
+    const prevDone = stops.slice(0, currentIndex).reverse().find(s => s.status==='done' && s.coords);
+    if (prevDone) {
+      showToast('⚠️ GPS assente — partenza dalla fermata precedente');
+      lastGpsPos = { coords: { latitude: prevDone.coords[0], longitude: prevDone.coords[1], accuracy: 9999, heading: null } };
+    } else {
+      showToast('⚠️ GPS richiesto per la navigazione — attiva la posizione');
+      document.getElementById('gpsRetryBtn').style.display='block';
+      return;
+    }
+  }
+
   await startNavigation(stop);
 }
 

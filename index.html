@@ -792,11 +792,27 @@ function initMap(){
   const STYLES = [
     'https://tiles.openfreemap.org/styles/liberty',
     'https://tiles.openfreemap.org/styles/bright',
-    'https://demotiles.maplibre.org/style.json'
+    {
+      version: 8,
+      name: 'OSM-Raster',
+      sources: {
+        'osm': {
+          type: 'raster',
+          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tileSize: 256,
+          attribution: '© OpenStreetMap contributors'
+        }
+      },
+      layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
+    }
   ];
   let styleIdx = 0;
 
+  let _styleTimer = null;
+
   function tryStyle() {
+    if (map) { try { map.remove(); } catch(e){} map = null; }
+
     map = new maplibregl.Map({
       container: 'map',
       style: STYLES[styleIdx],
@@ -808,8 +824,18 @@ function initMap(){
       fadeDuration: 0
     });
     map.addControl(new maplibregl.NavigationControl({showCompass:true, visualizePitch:true}), 'top-right');
+
+    // Se lo stile non carica entro 5s, passa al successivo
+    _styleTimer = setTimeout(() => {
+      if (!_mapLoaded) {
+        console.warn('Stile timeout, fallback →', styleIdx + 1);
+        if (styleIdx < STYLES.length - 1) { styleIdx++; tryStyle(); }
+        else { _flushMapOps(); }
+      }
+    }, 5000);
+
     map.on('load', () => {
-      // Forza ridimensionamento per risolvere altezza 0
+      clearTimeout(_styleTimer);
       setTimeout(() => { try { map.resize(); } catch(e){} }, 50);
       // ── Aggiungi edifici 3D ──
       try {
@@ -846,18 +872,16 @@ function initMap(){
       } catch(e) { console.warn('3D buildings:', e); }
       _flushMapOps();
     });
+
     map.on('error', (e) => {
-      // Reagisce SOLO a errori di caricamento stile (non errori di tile)
-      if (!_mapLoaded && e.error && e.error.status && e.error.status >= 400 && styleIdx < STYLES.length - 1) {
+      // Ignora errori di tile singole — non crashare
+      // Passa allo stile successivo solo per errori di caricamento stile
+      if (!_mapLoaded && styleIdx < STYLES.length - 1) {
+        clearTimeout(_styleTimer);
         styleIdx++;
-        try { map.remove(); } catch(ex){}
-        map = null;
         tryStyle();
       }
-      // Ignora tutti gli altri errori (tile 404, ecc.) — non crashare
     });
-    // Safety: force flush after 8s if style never fires 'load'
-    setTimeout(() => { if (!_mapLoaded) _flushMapOps(); }, 8000);
   }
   tryStyle();
 }
@@ -1863,3 +1887,4 @@ function showVoiceHelp() {
 </script>
 </body>
 </html>
+

@@ -7,8 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Navigator Raccolta</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.min.css"/>
-<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@400;500;600&display=swap');
@@ -86,12 +86,12 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
   width: 100%;
   height: 100%;
 }
-/* MapLibre canvas must fill container */
-.maplibregl-map { width: 100% !important; height: 100% !important; }
-.maplibregl-canvas-container, .maplibregl-canvas {
-  width: 100% !important;
-  height: 100% !important;
-}
+/* Leaflet overrides */
+.leaflet-container { background: #1a1d27; }
+.leaflet-control-zoom a { background: var(--surface2) !important; border-color: var(--border) !important; color: var(--text) !important; }
+.leaflet-control-zoom a:hover { background: var(--surface) !important; }
+.leaflet-popup-content-wrapper { background: var(--surface2); color: var(--text); border: 1px solid var(--border); border-radius: 10px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.4); }
+.leaflet-popup-tip { background: var(--surface2); }
 
 /* Overlays inside map */
 .map-stats {
@@ -656,24 +656,19 @@ const PANEL_H_NORMAL=268, PANEL_H_COMPACT=110;
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
-  if(id==='navScreen') setTimeout(()=>{ if(map) map.resize(); }, 60);
-  if(id==='navScreen') setTimeout(()=>{ if(map) map.resize(); }, 400);
+  if(id==='navScreen') setTimeout(()=>{ if(map) map.invalidateSize(); }, 60);
+  if(id==='navScreen') setTimeout(()=>{ if(map) map.invalidateSize(); }, 400);
 }
 
-// ── 3D TOGGLE ──
+// ── 3D TOGGLE (Leaflet non supporta pitch nativo) ──
 let _is3D = false;
 function toggle3D() {
-  if (!map) return;
   _is3D = !_is3D;
   const btn = document.getElementById('icon3d');
   if (_is3D) {
-    // Zoom in per vedere gli edifici (servono almeno zoom 15+)
-    const curZoom = map.getZoom();
-    map.easeTo({ pitch: 60, bearing: map.getBearing(), zoom: Math.max(curZoom, 16), duration: 900 });
     btn.style.color = 'var(--orange)';
-    showToast('🏙️ Vista 3D attiva — zoom in per vedere gli edifici');
-  } else {
-    map.easeTo({ pitch: 0, bearing: 0, duration: 700 });
+    showToast('ℹ️ Vista 3D non disponibile con questa mappa');
+    _is3D = false;
     btn.style.color = 'var(--text2)';
   }
 }
@@ -684,7 +679,7 @@ function toggleMapExpand(){
   document.getElementById('toggleIcon').innerHTML=mapExpanded
     ? '<path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/>'
     : '<path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/>';
-  setTimeout(()=>{ if(map) map.resize(); }, 350);
+  setTimeout(()=>{ if(map) map.invalidateSize(); }, 350);
 }
 
 // ── FILE INPUT ──
@@ -762,158 +757,40 @@ function parseTable(items,fname){
   currentIndex=0; showLoading(false); startNav();
 }
 
-// ── MAP (MapLibre GL JS + OpenFreeMap) ──
-let _mapLoaded = false;
-let _pendingMapOps = [];
-
-function mapReady(fn) {
-  if (_mapLoaded) fn();
-  else _pendingMapOps.push(fn);
-}
-
-function _flushMapOps() {
-  _mapLoaded = true;
-  _pendingMapOps.forEach(fn => { try { fn(); } catch(e){} });
-  _pendingMapOps = [];
-}
-
+// ── MAP (Leaflet) ──
 function initMap(){
   if(map) return;
-
-  // WebGL check
-  if (!maplibregl.supported()) {
-    document.getElementById('map').innerHTML =
-      '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ff6b00;text-align:center;padding:20px;font-size:13px">' +
-      '⚠️ WebGL non supportato da questo browser.<br>La mappa 3D non è disponibile.</div>';
-    _flushMapOps(); return;
-  }
-
-  const STYLES = [
-    {
-      version: 8,
-      name: 'OSM-Raster',
-      sources: {
-        'osm': {
-          type: 'raster',
-          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-          tileSize: 256,
-          attribution: '© OpenStreetMap contributors',
-          maxzoom: 19
-        }
-      },
-      layers: [{ id: 'osm-tiles', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 22 }]
-    },
-    'https://tiles.openfreemap.org/styles/liberty',
-    'https://tiles.openfreemap.org/styles/bright'
-  ];
-  let styleIdx = 0;
-
-  let _styleTimer = null;
-
-  function tryStyle() {
-    if (map) { try { map.remove(); } catch(e){} map = null; }
-
-    map = new maplibregl.Map({
-      container: 'map',
-      style: STYLES[styleIdx],
-      center: [8.0, 45.05],
-      zoom: 9,
-      pitch: 0,
-      bearing: 0,
-      antialias: true,
-      fadeDuration: 0
-    });
-    map.addControl(new maplibregl.NavigationControl({showCompass:true, visualizePitch:true}), 'top-right');
-
-    // Se lo stile non carica entro 5s, passa al successivo
-    _styleTimer = setTimeout(() => {
-      if (!_mapLoaded) {
-        console.warn('Stile timeout, fallback →', styleIdx + 1);
-        if (styleIdx < STYLES.length - 1) { styleIdx++; tryStyle(); }
-        else { _flushMapOps(); }
-      }
-    }, 5000);
-
-    map.on('load', () => {
-      clearTimeout(_styleTimer);
-      setTimeout(() => { try { map.resize(); } catch(e){} }, 50);
-      // ── Aggiungi edifici 3D ──
-      try {
-        const style = map.getStyle();
-        // Trova la prima sorgente vettoriale con layer 'building'
-        let buildingSrc = null;
-        for (const [srcId, src] of Object.entries(style.sources || {})) {
-          if (src.type === 'vector') { buildingSrc = srcId; break; }
-        }
-        if (buildingSrc) {
-          // Rimuovi layer building piatto se esiste
-          ['building', 'building-top', 'building-outline'].forEach(l => {
-            if (map.getLayer(l)) map.removeLayer(l);
-          });
-          // Inserisci edifici estrusi 3D sopra lo sfondo
-          map.addLayer({
-            id: 'buildings-3d',
-            type: 'fill-extrusion',
-            source: buildingSrc,
-            'source-layer': 'building',
-            minzoom: 14,
-            paint: {
-              'fill-extrusion-color': ['interpolate',['linear'],['zoom'],
-                14, '#1e2133', 16, '#252940', 18, '#2e3354'],
-              'fill-extrusion-height': [
-                'coalesce',
-                ['get','render_height'],['get','height'],['get','levels'],8
-              ],
-              'fill-extrusion-base': ['coalesce',['get','render_min_height'],0],
-              'fill-extrusion-opacity': 0.82
-            }
-          });
-        }
-      } catch(e) { console.warn('3D buildings:', e); }
-      _flushMapOps();
-    });
-
-    map.on('error', (e) => {
-      // Ignora errori di tile singole
-      console.warn('Map error (ignored):', e.error?.message || e);
-    });
-  }
-  tryStyle();
+  map=L.map('map',{zoomControl:false,attributionControl:true});
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19,attribution:'© OpenStreetMap contributors'}).addTo(map);
+  L.control.zoom({position:'topright'}).addTo(map);
+  map.setView([45.05,8.0],9);
 }
 
-// ── Marker element helpers ──
-function _mkEl(html, w, h) {
-  const el=document.createElement('div');
-  el.style.cssText=`width:${w}px;height:${h}px;cursor:pointer`;
-  el.innerHTML=html; return el;
-}
-function mkDestEl(){return _mkEl(`<div style="width:32px;height:32px;background:#ff6b00;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid white;box-shadow:0 3px 10px rgba(0,0,0,.5);position:relative"><div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(45deg);width:10px;height:10px;background:white;border-radius:50%"></div></div>`,32,44);}
-function mkUserEl(){return _mkEl(`<div style="width:18px;height:18px;background:#4fc3f7;border-radius:50%;border:3px solid white;box-shadow:0 0 0 6px rgba(79,195,247,.22)"></div>`,18,18);}
-function mkDoneEl(){return _mkEl(`<div style="width:26px;height:26px;background:#00e676;border-radius:50%;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,.3)">✓</div>`,26,26);}
+const destIcon=L.divIcon({className:'',iconSize:[36,44],iconAnchor:[12,40],
+  html:`<div style="width:32px;height:32px;background:#ff6b00;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid white;box-shadow:0 3px 10px rgba(0,0,0,.5);position:relative"><div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(45deg);width:10px;height:10px;background:white;border-radius:50%"></div></div>`
+});
+const userIcon=L.divIcon({className:'',iconSize:[18,18],iconAnchor:[9,9],
+  html:`<div style="width:18px;height:18px;background:#4fc3f7;border-radius:50%;border:3px solid white;box-shadow:0 0 0 6px rgba(79,195,247,.22)"></div>`
+});
+const doneIcon=L.divIcon({className:'',iconSize:[26,26],iconAnchor:[13,13],
+  html:`<div style="width:26px;height:26px;background:#00e676;border-radius:50%;border:3px solid white;display:flex;align-items:center;justify-content:center;font-size:13px;box-shadow:0 2px 6px rgba(0,0,0,.3)">✓</div>`
+});
 
-// ── Line helpers (GeoJSON sources/layers) ──
-// coords: [[lat,lng],…] — converted to [lng,lat] for MapLibre
+let routeLine=null;
+
+// ── Line helpers (Leaflet polylines) ──
 function setMapLine(id, latlngCoords, color, width, dash){
-  const gj={ type:'Feature', geometry:{ type:'LineString',
-    coordinates: latlngCoords.map(c=>[c[1],c[0]]) } };
-  mapReady(()=>{
-    if(map.getSource(id)){ map.getSource(id).setData(gj); if(!map.getLayer(id)) _addLL(id,color,width,dash); }
-    else{ map.addSource(id,{type:'geojson',data:gj}); _addLL(id,color,width,dash); }
-  });
-}
-function _addLL(id,color,width,dash){
-  try {
-    const paint={'line-color':color,'line-width':width,'line-opacity':0.9};
-    if(dash) paint['line-dasharray']=dash;
-    map.addLayer({id,type:'line',source:id,layout:{'line-cap':'round','line-join':'round'},paint});
-  } catch(e) {}
+  removeMapLine(id);
+  const opts={color,weight:width,opacity:.85};
+  if(dash) opts.dashArray=dash.join(' ');
+  const line=L.polyline(latlngCoords,opts).addTo(map);
+  line._navId=id;
+  if(id==='route-dash') routeLine=line;
+  else if(id==='nav-route') navPolyline=line;
 }
 function removeMapLine(id){
-  if(!map || !_mapLoaded) return;
-  try {
-    if(map.getLayer(id)) map.removeLayer(id);
-    if(map.getSource(id)) map.removeSource(id);
-  } catch(e) {}
+  if(id==='route-dash' && routeLine){ map.removeLayer(routeLine); routeLine=null; }
+  else if(id==='nav-route' && navPolyline && navPolyline!==true){ map.removeLayer(navPolyline); navPolyline=null; }
 }
 
 // ── Geocode ──
@@ -929,28 +806,25 @@ async function geocode(addr,comune){
 }
 
 async function placeDestMarker(stop){
-  if(destMarker){ destMarker.remove(); destMarker=null; }
+  if(destMarker){map.removeLayer(destMarker);destMarker=null;}
   removeMapLine('route-dash');
   if(!stop.coords) stop.coords=await geocode(stop.address,stop.comune);
   if(!stop.coords) return;
-  destMarker=new maplibregl.Marker({element:mkDestEl(),anchor:'bottom'})
-    .setLngLat([stop.coords[1],stop.coords[0]])
-    .setPopup(new maplibregl.Popup({offset:15}).setHTML(`<strong>${stop.address}</strong><br><small>${stop.comune}</small>${stop.note?`<br><em style="color:#e65100">${stop.note}</em>`:''}`))
-    .addTo(map);
+  destMarker=L.marker(stop.coords,{icon:destIcon}).addTo(map);
+  destMarker.bindPopup(`<strong>${stop.address}</strong><br><small>${stop.comune}</small>${stop.note?`<br><em style="color:#e65100">${stop.note}</em>`:''}`);
   if(lastGpsPos){
     const u=[lastGpsPos.coords.latitude,lastGpsPos.coords.longitude];
-    setMapLine('route-dash',[u,stop.coords],'#ff6b00',3,[2,2]);
-    map.fitBounds([[Math.min(u[1],stop.coords[1])-0.003,Math.min(u[0],stop.coords[0])-0.003],
-                   [Math.max(u[1],stop.coords[1])+0.003,Math.max(u[0],stop.coords[0])+0.003]],{padding:60});
+    setMapLine('route-dash',[u,stop.coords],'#ff6b00',3,[8,6]);
+    map.fitBounds(L.latLngBounds([u,stop.coords]),{padding:[50,50]});
   } else {
-    map.flyTo({center:[stop.coords[1],stop.coords[0]],zoom:15});
+    map.setView(stop.coords,15);
   }
 }
 
 function placeDoneMarker(stop){
   if(!stop.coords) return;
-  const popup=new maplibregl.Popup({offset:15}).setHTML(`<strong>✓ ${stop.address}</strong><br><small>${stop.comune}</small><br><small>${fmtDateTime(stop.arrivedAt)}</small>${stop.gps?`<br><small>📍 ${stop.gps.lat.toFixed(5)},${stop.gps.lng.toFixed(5)}</small>`:''}`);
-  const m=new maplibregl.Marker({element:mkDoneEl(),anchor:'center'}).setLngLat([stop.coords[1],stop.coords[0]]).setPopup(popup).addTo(map);
+  const m=L.marker(stop.coords,{icon:doneIcon}).addTo(map);
+  m.bindPopup(`✓ <strong>${stop.address}</strong><br><small>${stop.comune}</small><br><small>${fmtDateTime(stop.arrivedAt)}</small>${stop.gps?`<br><small>📍 ${stop.gps.lat.toFixed(5)},${stop.gps.lng.toFixed(5)}</small>`:''}`);
   doneMarkers.push(m);
 }
 
@@ -969,8 +843,8 @@ function startGPS(){
     lastGpsPos=pos; gpsEnabled=true;
     setGps('acquired','GPS attivo ✓',`±${Math.round(pos.coords.accuracy)}m`);
     const ll=[pos.coords.latitude,pos.coords.longitude];
-    if(!userMarker){ userMarker=new maplibregl.Marker({element:mkUserEl(),anchor:'center'}).setLngLat([ll[1],ll[0]]).addTo(map); }
-    else userMarker.setLngLat([ll[1],ll[0]]);
+    if(!userMarker) userMarker=L.marker(ll,{icon:userIcon,zIndexOffset:100}).addTo(map);
+    else userMarker.setLatLng(ll);
     // Update static dashed line only if NOT navigating
     const cs=stops[currentIndex];
     if(!navActive) {
@@ -1309,17 +1183,12 @@ async function startNavigation(stop) {
     navTotalDist = route.distance;
     navTotalTime = route.duration;
 
-    // Draw route polyline via MapLibre GeoJSON layer
+    // Draw route polyline (Leaflet)
     removeMapLine('nav-route');
     removeMapLine('route-dash');
-    navPolyline = true; // flag: route is displayed
-    navRemainingLine = null;
-
-    mapReady(() => {
-      const geojson = { type:'Feature', geometry: route.geometry };
-      if (map.getSource('nav-route')) { map.getSource('nav-route').setData(geojson); if(!map.getLayer('nav-route')) _addLL('nav-route','#4fc3f7',5,null); }
-      else { map.addSource('nav-route',{type:'geojson',data:geojson}); _addLL('nav-route','#4fc3f7',5,null); }
-    });
+    const coords = route.geometry.coordinates.map(c => [c[1], c[0]]);
+    const poly = L.polyline(coords, {color:'#4fc3f7',weight:5,opacity:.9}).addTo(map);
+    navPolyline = poly;
 
     // Extract steps from all legs
     navSteps = [];
@@ -1349,20 +1218,12 @@ async function startNavigation(stop) {
     document.getElementById('navBanner').classList.add('show');
     updateNavStep();
 
-    // Fit map to route then enter 3D navigation view
-    const rc = route.geometry.coordinates; // [lng,lat] pairs
-    const lngs = rc.map(c=>c[0]), lats = rc.map(c=>c[1]);
-    map.fitBounds([[Math.min(...lngs)-0.001,Math.min(...lats)-0.001],[Math.max(...lngs)+0.001,Math.max(...lats)+0.001]],{padding:60});
-    showToast('🗺️ Navigazione avviata — 3D ON');
-    _is3D = true;
+    // Fit map to route
+    map.fitBounds(navPolyline.getBounds(), {padding:[60,60]});
+    showToast('🗺️ Navigazione avviata');
+    _is3D = false;
     const b3d = document.getElementById('icon3d');
-    if(b3d) b3d.style.color='var(--orange)';
-
-    // After fitting, tilt to 3D nav mode
-    setTimeout(() => {
-      const heading = bearingBetween(from.latitude, from.longitude, navSteps[0]?.lat || stop.coords[0], navSteps[0]?.lng || stop.coords[1]);
-      map.easeTo({ pitch: 60, bearing: heading, zoom: 17, duration: 1200 });
-    }, 1500);
+    if(b3d) b3d.style.color='var(--text2)';
 
     // Announce first instruction
     const first = navSteps[0];
@@ -1381,20 +1242,19 @@ async function startNavigation(stop) {
 function stopNavigation() {
   navActive = false;
   navSteps = []; navStepIdx = 0;
-  removeMapLine('nav-route');
+  if (navPolyline && navPolyline !== true) { map.removeLayer(navPolyline); }
   navPolyline = null; navRemainingLine = null;
   document.getElementById('navBanner').classList.remove('show');
   const btn = document.getElementById('btnNav');
   btn.classList.remove('nav-active');
   btn.disabled = false;
   btn.innerHTML = '<svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:#0d1b2a;flex-shrink:0"><path d="M21.71 11.29l-9-9a1 1 0 0 0-1.42 0l-9 9a1 1 0 0 0 0 1.42l9 9a1 1 0 0 0 1.42 0l9-9a1 1 0 0 0 0-1.42zM14 14.5V12h-4v3H8v-4a1 1 0 0 1 1-1h5V7.5l3.5 3.5-3.5 3.5z"/></svg> Naviga';
-  // Restore dashed line and reset 3D camera
+  // Ripristina linea tratteggiata
   const stop = stops[currentIndex];
   if (lastGpsPos && stop && stop.coords) {
     const u = [lastGpsPos.coords.latitude, lastGpsPos.coords.longitude];
-    setMapLine('route-dash', [u, stop.coords], '#ff6b00', 3, [2, 2]);
+    setMapLine('route-dash', [u, stop.coords], '#ff6b00', 3, [8, 6]);
   }
-  map.easeTo({ pitch: 0, bearing: 0, duration: 800 });
   _is3D = false;
   const b3d = document.getElementById('icon3d');
   if(b3d) b3d.style.color='var(--text2)';
@@ -1502,15 +1362,8 @@ function onNavGpsUpdate(pos) {
     clearTimeout(rerouteTimeout);
   }
 
-  // ── 3D camera: follow GPS position and bearing ──
-  let heading = (pos.coords.heading !== null && !isNaN(pos.coords.heading)) ? pos.coords.heading : null;
-  if (heading === null && lastRoutePos && haversine(lastRoutePos[0], lastRoutePos[1], lat, lng) > 5) {
-    heading = bearingBetween(lastRoutePos[0], lastRoutePos[1], lat, lng);
-  }
-  if (heading === null && navStepIdx < navSteps.length) {
-    heading = bearingBetween(lat, lng, navSteps[navStepIdx].lat, navSteps[navStepIdx].lng);
-  }
-  map.easeTo({ center:[lng,lat], bearing: heading||0, pitch:60, zoom:17, duration:900, easing: t=>t });
+  // ── Segui posizione GPS sulla mappa ──
+  map.setView([lat, lng], Math.max(map.getZoom(), 16));
 
   lastRoutePos = [lat, lng];
 }
@@ -1652,8 +1505,8 @@ function backToUpload(){
   if(done>0&&!confirm('Tornare all\'inizio? Il progresso sarà perso.'))return;
   stopGPS();
   if(navActive) stopNavigation();
-  removeMapLine('nav-route'); removeMapLine('route-dash'); navPolyline=null;
-  if(map){ doneMarkers.forEach(m=>m.remove()); doneMarkers=[]; if(destMarker){destMarker.remove();destMarker=null;} if(userMarker){userMarker.remove();userMarker=null;} }
+  if(navPolyline && navPolyline!==true){ map.removeLayer(navPolyline); navPolyline=null; }
+  if(map){ doneMarkers.forEach(m=>map.removeLayer(m)); doneMarkers=[]; if(destMarker){map.removeLayer(destMarker);destMarker=null;} if(userMarker){map.removeLayer(userMarker);userMarker=null;} if(routeLine){map.removeLayer(routeLine);routeLine=null;} }
   stops=[];routeInfo={};currentIndex=0;lastGpsPos=null;gpsEnabled=false;geocodeCache={};
   document.getElementById('fileInput').value='';
   document.getElementById('doneOverlay').classList.remove('show');

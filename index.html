@@ -788,10 +788,7 @@ function initMap(){
     _flushMapOps(); return;
   }
 
-  // Stili con edifici 3D — liberty di OFM ha source 'openmaptiles'
   const STYLES = [
-    'https://tiles.openfreemap.org/styles/liberty',
-    'https://tiles.openfreemap.org/styles/bright',
     {
       version: 8,
       name: 'OSM-Raster',
@@ -800,11 +797,14 @@ function initMap(){
           type: 'raster',
           tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
           tileSize: 256,
-          attribution: '© OpenStreetMap contributors'
+          attribution: '© OpenStreetMap contributors',
+          maxzoom: 19
         }
       },
-      layers: [{ id: 'osm', type: 'raster', source: 'osm' }]
-    }
+      layers: [{ id: 'osm-tiles', type: 'raster', source: 'osm', minzoom: 0, maxzoom: 22 }]
+    },
+    'https://tiles.openfreemap.org/styles/liberty',
+    'https://tiles.openfreemap.org/styles/bright'
   ];
   let styleIdx = 0;
 
@@ -874,13 +874,8 @@ function initMap(){
     });
 
     map.on('error', (e) => {
-      // Ignora errori di tile singole — non crashare
-      // Passa allo stile successivo solo per errori di caricamento stile
-      if (!_mapLoaded && styleIdx < STYLES.length - 1) {
-        clearTimeout(_styleTimer);
-        styleIdx++;
-        tryStyle();
-      }
+      // Ignora errori di tile singole
+      console.warn('Map error (ignored):', e.error?.message || e);
     });
   }
   tryStyle();
@@ -1887,4 +1882,3 @@ function showVoiceHelp() {
 </script>
 </body>
 </html>
-

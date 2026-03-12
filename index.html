@@ -7,8 +7,8 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>Navigator Raccolta</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css"/>
-<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.min.css"/>
+<script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;900&family=Barlow:wght@400;500;600&display=swap');
@@ -508,6 +508,11 @@ html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(-
       <svg id="toggleIcon" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
     </div>
 
+    <!-- 3D toggle button -->
+    <div class="map-toggle" id="btn3d" onclick="toggle3D()" title="Vista 3D" style="right:52px;background:var(--surface2);border:1px solid var(--border)">
+      <span id="icon3d" style="font-size:11px;font-weight:700;color:var(--text2);letter-spacing:-.5px">3D</span>
+    </div>
+
     <!-- Completed overlay -->
     <div class="done-overlay" id="doneOverlay">
       <div class="big-icon">✅</div>
@@ -641,7 +646,20 @@ function showScreen(id){
   if(id==='navScreen') setTimeout(()=>{ if(map) map.resize(); }, 60);
 }
 
-// ── MAP EXPAND TOGGLE ──
+// ── 3D TOGGLE ──
+let _is3D = false;
+function toggle3D() {
+  if (!map) return;
+  _is3D = !_is3D;
+  const btn = document.getElementById('icon3d');
+  if (_is3D) {
+    map.easeTo({ pitch: 60, bearing: map.getBearing(), duration: 700 });
+    btn.style.color = 'var(--orange)';
+  } else {
+    map.easeTo({ pitch: 0, bearing: 0, duration: 700 });
+    btn.style.color = 'var(--text2)';
+  }
+}
 function toggleMapExpand(){
   mapExpanded=!mapExpanded;
   const panel=document.getElementById('ctrlPanel');
@@ -728,29 +746,65 @@ function parseTable(items,fname){
 }
 
 // ── MAP (MapLibre GL JS + OpenFreeMap) ──
+let _mapLoaded = false;
 let _pendingMapOps = [];
+
+function mapReady(fn) {
+  if (_mapLoaded) fn();
+  else _pendingMapOps.push(fn);
+}
+
+function _flushMapOps() {
+  _mapLoaded = true;
+  _pendingMapOps.forEach(fn => { try { fn(); } catch(e){} });
+  _pendingMapOps = [];
+}
 
 function initMap(){
   if(map) return;
-  map = new maplibregl.Map({
-    container: 'map',
-    style: 'https://tiles.openfreemap.org/styles/liberty',
-    center: [8.0, 45.05],
-    zoom: 9,
-    pitch: 0,
-    bearing: 0,
-    antialias: true
-  });
-  map.addControl(new maplibregl.NavigationControl({showCompass:true, visualizePitch:true}), 'top-right');
-  map.on('load', () => {
-    _pendingMapOps.forEach(fn=>fn());
-    _pendingMapOps=[];
-  });
-}
 
-function mapReady(fn) {
-  if(map && map.isStyleLoaded()) fn();
-  else _pendingMapOps.push(fn);
+  // WebGL check
+  if (!maplibregl.supported()) {
+    document.getElementById('map').innerHTML =
+      '<div style="display:flex;align-items:center;justify-content:center;height:100%;color:#ff6b00;text-align:center;padding:20px;font-size:13px">' +
+      '⚠️ WebGL non supportato da questo browser.<br>La mappa 3D non è disponibile.</div>';
+    _flushMapOps(); return;
+  }
+
+  // Prova OpenFreeMap liberty, fallback a bright, poi a demotiles
+  const STYLES = [
+    'https://tiles.openfreemap.org/styles/liberty',
+    'https://tiles.openfreemap.org/styles/bright',
+    'https://demotiles.maplibre.org/style.json'
+  ];
+  let styleIdx = 0;
+
+  function tryStyle() {
+    map = new maplibregl.Map({
+      container: 'map',
+      style: STYLES[styleIdx],
+      center: [8.0, 45.05],
+      zoom: 9,
+      pitch: 0,
+      bearing: 0,
+      antialias: true,
+      fadeDuration: 0
+    });
+    map.addControl(new maplibregl.NavigationControl({showCompass:true, visualizePitch:true}), 'top-right');
+    map.on('load', () => { _flushMapOps(); });
+    map.on('error', (e) => {
+      if (!_mapLoaded && styleIdx < STYLES.length - 1) {
+        styleIdx++;
+        map.remove(); map = null;
+        tryStyle();
+      } else {
+        _flushMapOps(); // proceed even on error
+      }
+    });
+    // Safety: force flush after 8s if style never fires 'load'
+    setTimeout(() => { if (!_mapLoaded) _flushMapOps(); }, 8000);
+  }
+  tryStyle();
 }
 
 // ── Marker element helpers ──
@@ -774,14 +828,18 @@ function setMapLine(id, latlngCoords, color, width, dash){
   });
 }
 function _addLL(id,color,width,dash){
-  const paint={'line-color':color,'line-width':width,'line-opacity':0.9};
-  if(dash) paint['line-dasharray']=dash;
-  map.addLayer({id,type:'line',source:id,layout:{'line-cap':'round','line-join':'round'},paint});
+  try {
+    const paint={'line-color':color,'line-width':width,'line-opacity':0.9};
+    if(dash) paint['line-dasharray']=dash;
+    map.addLayer({id,type:'line',source:id,layout:{'line-cap':'round','line-join':'round'},paint});
+  } catch(e) {}
 }
 function removeMapLine(id){
-  if(!map||!map.isStyleLoaded()) return;
-  if(map.getLayer(id)) map.removeLayer(id);
-  if(map.getSource(id)) map.removeSource(id);
+  if(!map || !_mapLoaded) return;
+  try {
+    if(map.getLayer(id)) map.removeLayer(id);
+    if(map.getSource(id)) map.removeSource(id);
+  } catch(e) {}
 }
 
 // ── Geocode ──
@@ -1198,6 +1256,9 @@ async function startNavigation(stop) {
     const lngs = rc.map(c=>c[0]), lats = rc.map(c=>c[1]);
     map.fitBounds([[Math.min(...lngs)-0.001,Math.min(...lats)-0.001],[Math.max(...lngs)+0.001,Math.max(...lats)+0.001]],{padding:60});
     showToast('🗺️ Navigazione avviata — 3D ON');
+    _is3D = true;
+    const b3d = document.getElementById('icon3d');
+    if(b3d) b3d.style.color='var(--orange)';
 
     // After fitting, tilt to 3D nav mode
     setTimeout(() => {
@@ -1236,6 +1297,9 @@ function stopNavigation() {
     setMapLine('route-dash', [u, stop.coords], '#ff6b00', 3, [2, 2]);
   }
   map.easeTo({ pitch: 0, bearing: 0, duration: 800 });
+  _is3D = false;
+  const b3d = document.getElementById('icon3d');
+  if(b3d) b3d.style.color='var(--text2)';
 }
 
 function updateNavStep() {
